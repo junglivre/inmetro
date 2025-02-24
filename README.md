@@ -32,7 +32,7 @@ Edite as seguintes variáveis no script:
 Execute o script normalmente para verificar se funciona:
 
 ```bash
-python script_ftp_watchdog.py
+python inmetro.py
 ```
 
 Isso deve iniciar o monitoramento no modo console.
@@ -42,7 +42,7 @@ Isso deve iniciar o monitoramento no modo console.
 Depois de confirmar que o script funciona corretamente, instale-o como um serviço:
 
 ```bash
-python script_ftp_watchdog.py install
+python inmetro.py install
 ```
 
 ### 5. Configurar o serviço para iniciar automaticamente
@@ -56,7 +56,7 @@ python script_ftp_watchdog.py install
 ### 6. Iniciar o serviço
 
 ```bash
-python script_ftp_watchdog.py start
+python inmetro.py start
 ```
 
 Ou inicie pelo gerenciador de serviços do Windows.
@@ -68,8 +68,8 @@ Ou inicie pelo gerenciador de serviços do Windows.
 
 ## Comandos do Serviço
 
-- Iniciar: `python script_ftp_watchdog.py start`
-- Parar: `python script_ftp_watchdog.py stop`
-- Reiniciar: `python script_ftp_watchdog.py restart`
-- Desinstalar: `python script_ftp_watchdog.py remove`
-- Ver status: `python script_ftp_watchdog.py status`
+- Iniciar: `python inmetro.py start`
+- Parar: `python inmetro.py stop`
+- Reiniciar: `python inmetro.py restart`
+- Desinstalar: `python inmetro.py remove`
+- Ver status: `python inmetro.py status`
