@@ -24,12 +24,13 @@ logging.basicConfig(
 
 # Configurações FTP
 FTP_SERVER = 'SERVER'
+FTP_PORT = 21
 FTP_USERNAME = 'USER'
 FTP_PASSWORD = 'PW'
-FTP_DIRECTORY = 'PATH'  # Diretório no servidor FTP
+FTP_DIRECTORY = 'PATH'
 
 # Diretório onde a Intelbras salva os vídeos
-VIDEO_DIRECTORY = r'PATH'  # Ajuste para o caminho correto
+VIDEO_DIRECTORY = r'PATH'
 
 # Diretório para arquivos já enviados (opcional)
 SENT_DIRECTORY = r'PATH'
@@ -46,76 +47,143 @@ class FTPUploader:
         if not os.path.exists(SENT_DIRECTORY):
             os.makedirs(SENT_DIRECTORY)
     
+    def get_relative_path(self, file_path):
+        """Obtém o caminho relativo do arquivo em relação ao VIDEO_DIRECTORY"""
+        return os.path.relpath(file_path, VIDEO_DIRECTORY)
+
+    def file_exists_on_ftp(self, ftp, filename):
+        """Verifica se o arquivo existe no servidor FTP"""
+        try:
+            ftp.size(filename)  # Tenta obter o tamanho do arquivo
+            return True
+        except ftplib.error_perm:  # Arquivo não existe
+            return False
+        except Exception as e:
+            logging.error(f"Erro ao verificar existência do arquivo no FTP: {str(e)}")
+            return False
+
     def connect_ftp(self):
         """Estabelece conexão com o servidor FTP"""
         try:
-            ftp = ftplib.FTP(FTP_SERVER)
+            ftp = ftplib.FTP()
+            ftp.connect(FTP_SERVER, FTP_PORT, timeout=30)
             ftp.login(FTP_USERNAME, FTP_PASSWORD)
             return ftp
+        except ftplib.error_perm as e:
+            logging.error(f"Erro de permissão FTP: {str(e)}")
+            if "530" in str(e):
+                logging.error("Credenciais FTP inválidas")
+            return None
+        except socket.gaierror as e:
+            logging.error(f"Erro de resolução do servidor FTP: {str(e)}")
+            return None
+        except socket.timeout as e:
+            logging.error(f"Timeout na conexão FTP: {str(e)}")
+            return None
+        except ConnectionRefusedError as e:
+            logging.error(f"Conexão recusada pelo servidor FTP: {str(e)}")
+            return None
         except Exception as e:
-            logging.error(f"Erro ao conectar ao servidor FTP: {e}")
+            logging.error(f"Erro inesperado ao conectar ao FTP: {str(e)}")
             return None
     
     def create_remote_directory(self, ftp, directory):
         """Cria diretório remoto se não existir"""
         try:
-            ftp.cwd('/')  # Volta para o diretório raiz
-            for folder in directory.strip('/').split('/'):
+            path_parts = directory.strip('/').split('/')
+            
+            try:
+                ftp.cwd('/')
+            except ftplib.error_perm as e:
+                logging.error(f"Erro ao acessar diretório raiz: {str(e)}")
+                return False
+            
+            current_path = ''
+            for folder in path_parts:
                 if folder:
+                    current_path += '/' + folder
                     try:
-                        ftp.cwd(folder)
-                    except:
-                        ftp.mkd(folder)
-                        ftp.cwd(folder)
+                        ftp.cwd(current_path)
+                    except ftplib.error_perm:
+                        try:
+                            ftp.mkd(current_path)
+                            ftp.cwd(current_path)
+                            logging.info(f"Criado diretório remoto: {current_path}")
+                        except ftplib.error_perm as e:
+                            logging.error(f"Erro ao criar diretório {current_path}: {str(e)}")
+                            return False
+            return True
         except Exception as e:
-            logging.error(f"Erro ao criar diretório remoto: {e}")
+            logging.error(f"Erro inesperado ao criar diretório remoto: {str(e)}")
+            return False
     
     def upload_file(self, file_path):
         """Faz upload de um arquivo para o servidor FTP"""
-        # Verificar se o arquivo existe
         if not os.path.exists(file_path):
             logging.warning(f"Arquivo não encontrado: {file_path}")
             return False
         
-        # Verificar a idade do arquivo
-        file_mod_time = os.path.getmtime(file_path)
-        file_age = datetime.datetime.now() - datetime.datetime.fromtimestamp(file_mod_time)
-        
-        # Se o arquivo foi modificado nas últimas 3 horas, não fazer upload ainda
-        if file_age.total_seconds() < MIN_AGE_HOURS * 3600:
-            logging.info(f"Arquivo muito recente, ignorando por enquanto: {file_path}")
-            return False
-        
-        # Verificar se o arquivo está em uso
         if self.is_file_in_use(file_path):
-            logging.warning(f"Arquivo está em uso, ignorando por enquanto: {file_path}")
+            logging.warning(f"Arquivo está em uso: {file_path}")
             return False
         
-        # Conectar ao FTP
         ftp = self.connect_ftp()
         if not ftp:
             return False
         
         try:
-            # Criar estrutura de diretórios no servidor FTP
-            today = datetime.datetime.now().strftime('%Y-%m-%d')
-            remote_dir = f"{FTP_DIRECTORY}{today}/"
-            self.create_remote_directory(ftp, remote_dir)
-            ftp.cwd(remote_dir)
-            
-            # Fazer upload do arquivo
+            # Obtém o caminho relativo e combina com o diretório FTP base
+            relative_path = self.get_relative_path(file_path)
+            remote_path = os.path.join(FTP_DIRECTORY, os.path.dirname(relative_path)).replace('\\', '/')
             file_name = os.path.basename(file_path)
-            with open(file_path, 'rb') as file:
-                ftp.storbinary(f'STOR {file_name}', file)
+            remote_file = os.path.join(remote_path, file_name).replace('\\', '/')
             
-            logging.info(f"Arquivo enviado com sucesso: {file_name}")
+            # Cria a estrutura de diretórios no FTP
+            if not self.create_remote_directory(ftp, remote_path):
+                logging.error(f"Falha ao criar estrutura de diretórios: {remote_path}")
+                return False
             
-            # Mover arquivo para pasta de enviados
-            self.move_to_sent(file_path)
+            # Navega até o diretório correto antes do upload
+            try:
+                ftp.cwd('/')  # Volta para a raiz
+                ftp.cwd(remote_path)  # Navega até o diretório de destino
+                logging.info(f"Navegado para diretório: {remote_path}")
+            except ftplib.error_perm as e:
+                logging.error(f"Erro ao navegar para diretório de destino: {str(e)}")
+                return False
             
-            return True
+            # Verifica se o arquivo já existe no diretório atual
+            file_exists = self.file_exists_on_ftp(ftp, file_name)
+            
+            if file_exists:
+                # Se existe, aplica a regra de 3 horas
+                file_mod_time = os.path.getmtime(file_path)
+                file_age = datetime.datetime.now() - datetime.datetime.fromtimestamp(file_mod_time)
+                
+                if file_age.total_seconds() < MIN_AGE_HOURS * 3600:
+                    return False
+            
+            # Se não existe ou já passou das 3 horas, faz o upload
+            try:
+                with open(file_path, 'rb') as file:
+                    ftp.voidcmd('TYPE I')
+                    # Upload do arquivo no diretório atual
+                    ftp.storbinary(f'STOR {file_name}', file)
+                
+                logging.info(f"Upload concluído: {remote_file}")
+                return True
+                
+            except ftplib.error_perm as e:
+                logging.error(f"Erro de permissão durante upload: {str(e)}")
+                if "553" in str(e):
+                    logging.error("Permissão negada para escrita do arquivo")
+                return False
+            except IOError as e:
+                logging.error(f"Erro de I/O durante upload: {str(e)}")
+                return False
+            
         except Exception as e:
-            logging.error(f"Erro ao enviar arquivo {file_path}: {e}")
+            logging.error(f"Erro inesperado durante upload: {str(e)}")
             return False
         finally:
             try:
@@ -140,23 +208,6 @@ class FTPUploader:
             return False  # Arquivo não está em uso
         except:
             return True  # Arquivo está em uso
-    
-    def move_to_sent(self, file_path):
-        """Move o arquivo para a pasta de enviados"""
-        try:
-            if os.path.exists(SENT_DIRECTORY):
-                today = datetime.datetime.now().strftime('%Y-%m-%d')
-                sent_subdir = os.path.join(SENT_DIRECTORY, today)
-                
-                if not os.path.exists(sent_subdir):
-                    os.makedirs(sent_subdir)
-                    
-                file_name = os.path.basename(file_path)
-                destination = os.path.join(sent_subdir, file_name)
-                shutil.move(file_path, destination)
-                logging.info(f"Arquivo movido para: {destination}")
-        except Exception as e:
-            logging.error(f"Erro ao mover arquivo para pasta de enviados: {e}")
 
 class FileChangeHandler(FileSystemEventHandler):
     def __init__(self):
@@ -187,9 +238,11 @@ class FileChangeHandler(FileSystemEventHandler):
     
     def process_pending_files(self):
         """Processa todos os arquivos pendentes"""
+        # Cria uma cópia da lista para evitar o erro de modificação durante iteração
+        pending_files_copy = self.pending_files.copy()
         files_to_remove = set()
         
-        for file_path in self.pending_files:
+        for file_path in pending_files_copy:
             # Tentar fazer upload do arquivo
             success = self.uploader.upload_file(file_path)
             if success:
